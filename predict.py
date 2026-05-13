@@ -4,6 +4,9 @@ import joblib
 from scipy.sparse import hstack
 from fastapi.middleware.cors import CORSMiddleware
 import os
+import re
+
+
 
 app = FastAPI()
 
@@ -21,9 +24,15 @@ model = joblib.load("email_model_final.pkl")
 print("Model loaded successfully")
 tfidf = joblib.load("tfidf_vectorizer_final.pkl")
 print("Vectorizer loaded successfully") 
-def predict_email(text):
-    text_lower = text.lower()
 
+
+def predict_email(text):
+
+    text = re.sub(r'\s+', ' ', text)
+    text = text.strip()
+
+    text_lower = text.lower()
+    
     # ----------- BASIC FEATURES -----------
     has_payment = (
         any(word in text_lower for word in [
@@ -51,6 +60,29 @@ def predict_email(text):
     has_no_fee = any(word in text_lower for word in [
         'no fee','no payment','free','no charges'
     ])
+    
+    has_professional_language = any(word in text_lower for word in [
+        'regards',
+        'hr manager',
+        'selection process',
+        'internship program',
+        'department',
+        'hybrid',
+        'location'
+    ])
+
+    has_official_structure = (
+        'position:' in text_lower
+        or 'department:' in text_lower
+        or 'location:' in text_lower
+    )
+
+    has_legit_company_words = any(word in text_lower for word in [
+        'technologies',
+        'solutions',
+        'private limited',
+        'official'
+    ])
 
     is_money_request = has_payment and has_rupee and not has_stipend
     has_safe_money = has_rupee and has_stipend and has_no_fee
@@ -64,7 +96,6 @@ def predict_email(text):
         'upi','otp','click','link','verify','account blocked','login now','bank'
     ])
 
-    import re
     has_url = bool(re.search(r'http[s]?://|www\.', text_lower))
 
     has_short_link = any(link in text_lower for link in [
@@ -100,17 +131,22 @@ def predict_email(text):
     pred = model.predict(final)[0]
     prob = model.predict_proba(final)[0]
     max_prob = max(prob)
-
-    # ----------- FINAL DECISION LOGIC -----------
-
-    # Rule overrides FIRST
+    
+        # Rule overrides FIRST
     if is_money_request and has_whatsapp:
         final_pred = "fake"
 
     elif has_refund_trap:
         final_pred = "suspicious"
 
-    elif has_stipend and has_no_fee and not is_money_request:
+    elif (
+        has_stipend
+        and not is_money_request
+        and not has_whatsapp
+        and not has_short_link
+        and has_professional_language
+        and has_official_structure
+    ):
         final_pred = "real"
 
     # Then ML confidence
@@ -123,39 +159,139 @@ def predict_email(text):
     reasons = []
 
     if is_money_request:
-        reasons.append("Requests money (likely scam pattern)")
-    if has_urgency:
-        reasons.append("Uses urgency words")
-    if has_whatsapp:
-        reasons.append("Asks to contact on WhatsApp/Telegram")
-    if has_refund_trap:
-        reasons.append("Mentions refundable/security deposit")
-    if has_scam_words:
-        reasons.append("Contains scam keywords (OTP/UPI/etc)")
-    if has_url:
-        reasons.append("Contains URL link")
-    if has_short_link:
-        reasons.append("Uses shortened link")
-    if has_fake_domain:
-        reasons.append("Looks like fake domain")
-    if has_stipend and has_no_fee:
-        reasons.append("Mentions stipend with no fee")
+        reasons.append({
+            "title": "Payment Request",
+            "description": "This email asks for money, registration fee, or payment.",
+            "severity": "high"
+    })
 
-    # Remove duplicates
-    reasons = list(set(reasons))
+    if has_urgency:
+        reasons.append({
+            "title": "Urgency / Pressure",
+            "description": "The message creates urgency to force quick action.",
+            "severity": "medium"
+    })
+
+    if has_whatsapp:
+        reasons.append({
+            "title": "External Contact Request",
+            "description": "The sender asks to continue communication on WhatsApp or Telegram.",
+            "severity": "medium"
+    })
+
+    if has_refund_trap:
+        reasons.append({
+            "title": "Refundable Deposit Trap",
+            "description": "Mentions refundable or security deposit patterns often used in scams.",
+            "severity": "high"
+    })
+
+    if has_scam_words:
+        reasons.append({
+            "title": "Scam Keywords Detected",
+            "description": "Contains suspicious terms like OTP, UPI, verify, or login request.",
+            "severity": "medium"
+    })
+
+    if has_url:
+        reasons.append({
+            "title": "Contains External Link",
+            "description": "Email includes external URLs which may redirect users.",
+            "severity": "low"
+    })
+
+    if has_short_link:
+        reasons.append({
+            "title": "Shortened URL Detected",
+            "description": "Uses shortened links that may hide phishing websites.",
+            "severity": "high"
+    })
+
+    if has_fake_domain:
+        reasons.append({
+            "title": "Suspicious Domain",
+            "description": "Possible fake or impersonated company domain detected.",
+            "severity": "high"
+    })
+
+    if has_stipend and has_no_fee:
+        reasons.append({
+            "title": "No Payment Required",
+            "description": "Mentions stipend/salary and clearly states no payment required.",
+            "severity": "safe"
+    })
+        
+    if has_professional_language:
+        reasons.append({
+            "title": "Professional Email Structure",
+            "description": "The email uses formal internship and company communication patterns.",
+            "severity": "safe"
+    })
+        
+    if has_official_structure:
+        reasons.append({
+            "title": "Official Internship Details",
+            "description": "Contains structured internship information like department and location.",
+            "severity": "safe"
+    })    
+    
+    if has_legit_company_words:
+        reasons.append({
+            "title": "Recognized Company Indicators",
+            "description": "Contains company naming patterns commonly seen in legitimate organizations.",
+            "severity": "safe"
+    })        
+        
+    #threat score calculation
+    if final_pred == "real":
+        threat_score = int((1 - max_prob) * 40)
+    elif final_pred == "suspicious":
+        threat_score = int(max_prob * 70)
+    else:
+        threat_score = int(max_prob * 100)    
+        
+    if is_money_request:
+        threat_score += 15
+
+    if has_short_link:
+        threat_score += 10
+
+    if has_fake_domain:
+        threat_score += 15
+
+    if has_whatsapp:
+        threat_score += 10
+
+    threat_score = min(threat_score, 100)    
 
     # Fallback reason
     if not reasons:
+
         if final_pred == "real":
-            reasons.append("Looks like a legitimate informational email")
+            reasons.append({
+                "title": "Looks Legitimate",
+                "description": "No major scam indicators detected.",
+                "severity": "safe"
+            })
+
         elif final_pred == "fake":
-            reasons.append("Likely scam based on patterns")
+            reasons.append({
+                "title": "Suspicious Pattern Detected",
+                "description": "The email matches multiple scam-related behavioral patterns.",
+                "severity": "high"
+            })
+
         else:
-            reasons.append("Model uncertain - requires manual verification")
+            reasons.append({
+                "title": "Needs Manual Verification",
+                "description": "The model confidence is uncertain for this email.",
+                "severity": "medium"
+            })
 
     return {
         "prediction": final_pred,
-        "confidence": float(max_prob),
+        "confidence": round(float(max_prob), 2),
+        "threat_score": threat_score,
         "reasons": reasons
     }
 
