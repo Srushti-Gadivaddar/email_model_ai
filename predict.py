@@ -25,6 +25,17 @@ print("Model loaded successfully")
 tfidf = joblib.load("tfidf_vectorizer_final.pkl")
 print("Vectorizer loaded successfully") 
 
+suspicious_domains = [
+    "bit.ly",
+    "tinyurl",
+    "goo.gl",
+    "t.me",
+    "telegram",
+    "whatsapp",
+    "g00gle",
+    "amaz0n",
+    "micr0soft"
+]
 
 def predict_email(text):
 
@@ -106,6 +117,11 @@ def predict_email(text):
         'g00gle','micr0soft','amaz0n'
     ])
 
+    has_phishing_url = any(
+        domain in text_lower
+        for domain in suspicious_domains
+    )
+    
     # ----------- FEATURE VECTOR -----------
     extra = [[
         int(is_money_request),
@@ -240,7 +256,13 @@ def predict_email(text):
             "title": "Recognized Company Indicators",
             "description": "Contains company naming patterns commonly seen in legitimate organizations.",
             "severity": "safe"
-    })        
+    })  
+    if has_phishing_url:
+        reasons.append({
+            "title": "Phishing URL Detected",
+            "description": "Suspicious or shortened links detected.",
+            "severity": "high"
+    })         
         
     #threat score calculation
     if final_pred == "real":
@@ -261,6 +283,8 @@ def predict_email(text):
 
     if has_whatsapp:
         threat_score += 10
+    if has_phishing_url:
+        threat_score += 20    
 
     threat_score = min(threat_score, 100)    
 
