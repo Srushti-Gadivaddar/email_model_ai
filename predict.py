@@ -319,20 +319,21 @@ def predict_email(text):
         "reasons": reasons
     }
 
-
 class EmailRequest(BaseModel):
     text: str
+    links: list[str] = []
     
 @app.post("/predict")
-def predict(req: EmailRequest | dict):
-    if isinstance(req, dict):
-        text = req.get("text")
-    else:
-        text = req.text
+def predict(req: EmailRequest):
 
-    if not text:
+    combined_text = req.text
+
+    if req.links:
+        combined_text += "\n" + "\n".join(req.links)
+
+    if not combined_text:
         raise HTTPException(status_code=400, detail="Text is required")
 
-    return predict_email(text)
+    return predict_email(combined_text)
 
 
